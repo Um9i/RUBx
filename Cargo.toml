@@ -1,0 +1,19 @@
+[package]
+name = "rubx"
+version = "0.1.0"
+edition = "2024"
+description = "A Rubik's cube simulator built with Bevy"
+
+[dependencies]
+bevy = { version = "0.20.1", default-features = false, features = ["3d", "ui"] }
+fastrand = "2"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+# Bevy is slow unoptimised, so keep our code quick to rebuild but optimise dependencies.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
