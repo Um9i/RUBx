@@ -187,8 +187,45 @@ pub fn parse_sequence(text: &str) -> Result<Vec<Turn>, ParseTurnError> {
     text.split_whitespace().map(str::parse).collect()
 }
 
+/// Parses an algorithm, which may also use wide turns such as `r` or `f'`.
+///
+/// A wide turn moves an outer layer and the slice next to it, so it expands to those two turns.
+pub fn parse_algorithm(text: &str) -> Result<Vec<Turn>, ParseTurnError> {
+    let mut turns = Vec::new();
+    for token in text.split_whitespace() {
+        let mut chars = token.chars();
+        let wide = match chars.next() {
+            Some('r') => Some(('R', 'M', true)),
+            Some('l') => Some(('L', 'M', false)),
+            Some('u') => Some(('U', 'E', true)),
+            Some('d') => Some(('D', 'E', false)),
+            Some('f') => Some(('F', 'S', false)),
+            Some('b') => Some(('B', 'S', true)),
+            _ => None,
+        };
+        let Some((face, slice, slice_reversed)) = wide else {
+            turns.push(token.parse()?);
+            continue;
+        };
+        let suffix = chars.as_str();
+        let slice_turn: Turn = format!("{slice}{suffix}").parse()?;
+        turns.push(format!("{face}{suffix}").parse()?);
+        turns.push(if slice_reversed {
+            slice_turn.inverse()
+        } else {
+            slice_turn
+        });
+    }
+    Ok(turns)
+}
+
+/// Returns the turns that undo `turns`.
+pub fn invert_sequence(turns: &[Turn]) -> Vec<Turn> {
+    turns.iter().rev().map(|turn| turn.inverse()).collect()
+}
+
 /// An exact rotation of a cubie, stored as a signed permutation matrix in row order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Rotation([[i8; 3]; 3]);
 
 impl Rotation {
@@ -196,7 +233,7 @@ impl Rotation {
     pub const IDENTITY: Rotation = Rotation([[1, 0, 0], [0, 1, 0], [0, 0, 1]]);
 
     /// Returns a rotation of `quarters` quarter turns about `axis`, by the right-hand rule.
-    fn quarter_turns(axis: Axis, quarters: i8) -> Self {
+    pub fn quarter_turns(axis: Axis, quarters: i8) -> Self {
         let step = match axis {
             Axis::X => Rotation([[1, 0, 0], [0, 0, -1], [0, 1, 0]]),
             Axis::Y => Rotation([[0, 0, 1], [0, 1, 0], [-1, 0, 0]]),
@@ -206,7 +243,7 @@ impl Rotation {
     }
 
     /// Returns the rotation that applies `first` and then `self`.
-    fn after(self, first: Rotation) -> Rotation {
+    pub fn after(self, first: Rotation) -> Rotation {
         let mut out = [[0; 3]; 3];
         for (row, out_row) in out.iter_mut().enumerate() {
             for (col, cell) in out_row.iter_mut().enumerate() {
@@ -214,6 +251,34 @@ impl Rotation {
             }
         }
         Rotation(out)
+    }
+
+    /// Returns the rotation that undoes this one.
+    pub fn inverse(self) -> Rotation {
+        let m = self.0;
+        Rotation([
+            [m[0][0], m[1][0], m[2][0]],
+            [m[0][1], m[1][1], m[2][1]],
+            [m[0][2], m[1][2], m[2][2]],
+        ])
+    }
+
+    /// Returns the turn that acts in the rotated frame the way `turn` acts in the original one.
+    pub fn rotate_turn(self, turn: Turn) -> Turn {
+        let mut unit = [0; 3];
+        unit[turn.axis.index()] = 1;
+        let image = self.apply(unit);
+        let axis = Axis::ALL
+            .into_iter()
+            .find(|axis| image[axis.index()] != 0)
+            .unwrap_or(turn.axis);
+        let sign = image[axis.index()];
+        let layer = match (sign < 0, turn.layer) {
+            (true, Layer::Pos) => Layer::Neg,
+            (true, Layer::Neg) => Layer::Pos,
+            (_, layer) => layer,
+        };
+        Turn::new(axis, layer, i32::from(turn.quarters) * i32::from(sign))
     }
 
     /// Applies this rotation to a vector.
@@ -298,6 +363,39 @@ impl Cube {
         &self.cubies
     }
 
+    /// Returns the cubie that belongs at `home`.
+    pub fn cubie_at_home(&self, home: [i8; 3]) -> Cubie {
+        self.cubies[index_of_home(home)]
+    }
+
+    /// Returns the rotation of the cube as a whole, as shown by where its centres have gone.
+    ///
+    /// The core turns with every slice and whole-cube rotation and with nothing else, so it always
+    /// has the same rotation as the set of centres.
+    pub fn frame(&self) -> Rotation {
+        self.cubies[index_of_home([0, 0, 0])].rotation
+    }
+
+    /// Re-expresses the cube so that centres sit where `colours` puts them when solved.
+    ///
+    /// The result doesn't depend on how the cube is being held. In it, a piece is in its solved
+    /// place relative to the centres exactly when its rotation is the identity. Also returns the
+    /// rotation that maps the new frame back to the world, for converting turns.
+    pub fn reframed(&self, colours: Rotation) -> (Cube, Rotation) {
+        let to_world = self.frame().after(colours);
+        let from_world = to_world.inverse();
+        let from_colours = colours.inverse();
+        let mut cubies = self.cubies;
+        for cubie in &self.cubies {
+            let home = from_colours.apply(cubie.home);
+            cubies[index_of_home(home)] = Cubie {
+                home,
+                rotation: from_world.after(cubie.rotation.after(colours)),
+            };
+        }
+        (Self { cubies }, to_world)
+    }
+
     /// Applies a turn to the cube.
     pub fn apply(&mut self, turn: Turn) {
         let rotation = Rotation::quarter_turns(turn.axis, turn.quarters);
@@ -329,6 +427,12 @@ impl Cube {
             })
         })
     }
+}
+
+/// Returns the index in [`Cube::cubies`] of the piece whose solved position is `home`.
+pub fn index_of_home(home: [i8; 3]) -> usize {
+    let digit = |coord: i8| (coord.clamp(-1, 1) + 1) as usize;
+    digit(home[0]) + 3 * digit(home[1]) + 9 * digit(home[2])
 }
 
 /// Returns a distinct index in `0..6` for an axis-aligned unit normal.
@@ -565,6 +669,92 @@ mod tests {
             ],
             [0, -1, 1, 0, 2],
         );
+    }
+
+    #[test]
+    fn wide_turns_should_move_the_face_and_the_slice_beside_it() {
+        let cases = [
+            ("r", "R M'"),
+            ("r'", "R' M"),
+            ("r2", "R2 M2"),
+            ("l", "L M"),
+            ("u", "U E'"),
+            ("d", "D E"),
+            ("f", "F S"),
+            ("b", "B S'"),
+        ];
+        for (wide, expanded) in cases {
+            assert_eq!(parse_algorithm(wide).unwrap(), seq(expanded), "{wide}");
+        }
+    }
+
+    #[test]
+    fn every_cubie_should_be_stored_at_the_index_of_its_home() {
+        for (index, cubie) in Cube::solved().cubies().iter().enumerate() {
+            assert_eq!(index_of_home(cubie.home()), index);
+        }
+    }
+
+    #[test]
+    fn invert_sequence_should_undo_a_sequence() {
+        let turns = seq("R U F2 L' M");
+        let mut cube = Cube::solved();
+        cube.apply_all(turns.iter().copied());
+        cube.apply_all(invert_sequence(&turns));
+        assert_eq!(appearance(&cube), appearance(&Cube::solved()));
+    }
+
+    /// The whole-cube rotations and slices that can change how a cube is being held.
+    const HOLDS: [&str; 6] = ["", "z2", "x y", "y' z", "M", "x2 E S'"];
+
+    #[test]
+    fn reframed_should_ignore_how_the_cube_is_held() {
+        let colours = Rotation::quarter_turns(Axis::Z, 2);
+        let base = after("R U2 F'").reframed(colours).0;
+        for hold in ["", "z2", "x y", "y' z", "x2 y"] {
+            let mut cube = after(hold);
+            // Make the same physical turns in the new hold.
+            let (_, to_world) = cube.reframed(colours);
+            let colour_frame = Rotation::quarter_turns(Axis::Z, 2).inverse();
+            cube.apply_all(
+                seq("R U2 F'")
+                    .into_iter()
+                    .map(|turn| to_world.after(colour_frame).rotate_turn(turn)),
+            );
+            assert_eq!(
+                appearance(&cube.reframed(colours).0),
+                appearance(&base),
+                "{hold}"
+            );
+        }
+    }
+
+    #[test]
+    fn rotate_turn_should_match_the_same_turn_in_the_reframed_cube() {
+        let colours = Rotation::quarter_turns(Axis::Z, 2);
+        for hold in HOLDS {
+            let start = {
+                let mut cube = after(hold);
+                cube.apply_all(seq("R U2 F' L D2 B"));
+                cube
+            };
+            for name in ["R", "L", "U", "D", "F", "B", "R'", "U'", "F2"] {
+                let method_turn: Turn = name.parse().unwrap();
+                let (view, to_world) = start.reframed(colours);
+
+                let mut moved_in_view = view;
+                moved_in_view.apply(method_turn);
+
+                let mut moved_in_world = start.clone();
+                moved_in_world.apply(to_world.rotate_turn(method_turn));
+
+                assert_eq!(
+                    appearance(&moved_in_world.reframed(colours).0),
+                    appearance(&moved_in_view),
+                    "{hold}: {name}",
+                );
+            }
+        }
     }
 
     #[test]

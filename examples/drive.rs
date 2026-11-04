@@ -24,6 +24,9 @@ use rubx::RubxPlugin;
 use rubx::camera::OrbitCamera;
 use rubx::cube::{Cube, parse_sequence};
 use rubx::game::{CubeState, GameCommand, Session, SolvePhase};
+use rubx::progress::Progress;
+use rubx::screens::{Screen, UiAction};
+use rubx::training::Run;
 
 #[derive(Clone, Debug)]
 enum Step {
@@ -42,6 +45,16 @@ enum Step {
     Release(MouseButton),
     KeyDown(KeyCode),
     KeyUp(KeyCode),
+    /// Keep performing an action until the current training attempt finishes.
+    UntilFinished(UiAction),
+    ExpectScreen(Screen),
+    ExpectFinished,
+    ExpectArrow(bool),
+    ExpectSolved,
+    /// Remember the cube, for comparing to later.
+    Snapshot,
+    /// Check that the cube is the remembered one with these turns applied.
+    ExpectSnapshotPlus(&'static str),
     /// Check the cube against a solved cube with these turns applied.
     ExpectCube(&'static str),
     ExpectPhase(SolvePhase),
@@ -68,6 +81,18 @@ fn world_drag(from: Vec3, to: Vec3, shot: Option<&'static str>) -> Vec<Step> {
     steps
 }
 
+/// Clicks a button the way a player does, through UI picking.
+fn click(label: &'static str) -> Vec<Step> {
+    vec![
+        Step::MoveToButton(label),
+        Step::Wait(3),
+        Step::Press(MouseButton::Left),
+        Step::Wait(2),
+        Step::Release(MouseButton::Left),
+        Step::Wait(6),
+    ]
+}
+
 /// Taps `key` while holding `modifiers`, as a real keyboard would report it.
 fn chord(modifiers: &[KeyCode], key: KeyCode) -> Vec<Step> {
     let mut steps: Vec<Step> = modifiers.iter().map(|&m| Step::KeyDown(m)).collect();
@@ -88,7 +113,14 @@ fn script() -> VecDeque<Step> {
     let right_of = |y: f32, z: f32| Vec3::new(1.5, y, z);
 
     // Wayland delivers the window's first real frame some time after the app loop starts.
-    let mut steps = vec![Wait(150), Shot("01-solved"), ExpectCube("")];
+    let mut steps = vec![Wait(150), Shot("00-menu"), ExpectScreen(Screen::Menu)];
+    steps.extend(click("Play"));
+    steps.extend([
+        ExpectScreen(Screen::Play),
+        Wait(40),
+        Shot("01-solved"),
+        ExpectCube(""),
+    ]);
 
     // Keyboard-style commands with animation.
     steps.extend([
@@ -202,9 +234,90 @@ fn script() -> VecDeque<Step> {
         Wait(2),
         ExpectPhase(SolvePhase::Ready),
         Shot("07-scrambled"),
-        // Give the last screenshot time to reach the disk before the app exits.
-        Wait(30),
     ]);
+
+    // Training mode, starting from Esc back to the main menu and using real clicks throughout.
+    steps.extend(chord(&[], KeyCode::Escape));
+    steps.push(ExpectScreen(Screen::Menu));
+    steps.extend(click("Training"));
+    steps.extend([ExpectScreen(Screen::Hub), Wait(10), Shot("08-training-hub")]);
+
+    // A follow-along lesson shows its arrow without being asked.
+    steps.extend(click("Learn to solve"));
+    steps.extend([
+        ExpectScreen(Screen::LessonList),
+        Wait(5),
+        Shot("09-lesson-list"),
+    ]);
+    steps.extend(click("1. How to read moves"));
+    steps.extend([
+        ExpectScreen(Screen::Lesson),
+        Wait(40),
+        ExpectArrow(true),
+        Shot("10-notation-lesson"),
+    ]);
+    steps.extend(chord(&[], KeyCode::KeyR));
+    steps.push(ExpectCube("z2 R"));
+    steps.extend(chord(&[], KeyCode::KeyL));
+    steps.push(Shot("11-wrong-move"));
+    steps.extend(chord(&[], KeyCode::Backspace));
+
+    // A stage lesson, with the hint arrow and target piece showing.
+    steps.extend(click("Back"));
+    steps.push(ExpectScreen(Screen::LessonList));
+    steps.extend(click("3. The white corners"));
+    steps.extend([ExpectScreen(Screen::Lesson), Wait(40), ExpectArrow(false)]);
+    steps.extend(click("Hint"));
+    steps.extend([ExpectArrow(true), Wait(5), Shot("12-corner-hint")]);
+    steps.push(UntilFinished(UiAction::ShowMe));
+    steps.extend([ExpectFinished, Wait(10), Shot("13-position-finished")]);
+    steps.extend(click("Back"));
+    steps.extend(click("Back"));
+    steps.push(ExpectScreen(Screen::Hub));
+
+    // The coach solves a whole scramble, and a drag beside the panel still lands on the right layer.
+    steps.extend(click("Coach"));
+    steps.extend([ExpectScreen(Screen::Coach), Wait(40), Snapshot]);
+    steps.extend(world_drag(front_of(1.0, 0.0), front_of(1.0, 1.0), None));
+    steps.push(ExpectSnapshotPlus("R"));
+    steps.extend(chord(&[], KeyCode::KeyH));
+    steps.extend([Wait(5), Shot("14-coach-hint")]);
+    steps.push(UntilFinished(UiAction::ShowMe));
+    steps.extend([ExpectSolved, Wait(10), Shot("15-coach-solved")]);
+    steps.extend(click("Back"));
+
+    // Drills: reveal the algorithm, and let the game demonstrate it.
+    steps.extend(click("Algorithm drills"));
+    steps.extend([
+        ExpectScreen(Screen::DrillList),
+        Wait(5),
+        Shot("16-drill-list"),
+    ]);
+    steps.extend(click("All PLL"));
+    steps.extend([ExpectScreen(Screen::Drill), Wait(40), Shot("17-drill")]);
+    steps.extend(click("Reveal"));
+    steps.push(Shot("18-drill-revealed"));
+    steps.push(UntilFinished(UiAction::ShowMe));
+    steps.extend([ExpectSolved, Wait(10), Shot("19-drill-finished")]);
+    steps.extend(click("Next"));
+    steps.push(ExpectScreen(Screen::Drill));
+    steps.extend(click("Back"));
+    steps.extend(click("Back"));
+
+    // Stage practice.
+    steps.extend(click("Stage practice"));
+    steps.extend([ExpectScreen(Screen::PracticeList), Wait(5)]);
+    steps.extend(click("Cross"));
+    steps.extend([
+        ExpectScreen(Screen::Practice),
+        Wait(40),
+        Shot("20-cross-practice"),
+    ]);
+    steps.push(UntilFinished(UiAction::ShowMe));
+    steps.extend([ExpectFinished, Wait(10), Shot("21-cross-finished")]);
+
+    // Give the last screenshot time to reach the disk before the app exits.
+    steps.push(Wait(30));
 
     VecDeque::from(steps)
 }
@@ -213,6 +326,9 @@ fn script() -> VecDeque<Step> {
 struct Driver {
     steps: VecDeque<Step>,
     wait: u32,
+    snapshot: Cube,
+    /// Frames spent on the current step, to catch one that never completes.
+    stuck: u32,
     out_dir: PathBuf,
     failures: u32,
 }
@@ -232,9 +348,13 @@ fn main() -> AppExit {
             ..default()
         }))
         .add_plugins(RubxPlugin)
+        // A default `Progress` has no path, so this never touches the player's real progress.
+        .insert_resource(Progress::default())
         .insert_resource(Driver {
             steps: script(),
             wait: 0,
+            snapshot: Cube::solved(),
+            stuck: 0,
             out_dir,
             failures: 0,
         })
@@ -247,7 +367,8 @@ fn main() -> AppExit {
 fn drive(
     mut commands: Commands,
     mut driver: ResMut<Driver>,
-    mut game: MessageWriter<GameCommand>,
+    (mut game, mut ui): (MessageWriter<GameCommand>, MessageWriter<UiAction>),
+    (screen, run): (Res<State<Screen>>, Res<Run>),
     mut cursor_events: MessageWriter<WindowEvent>,
     mut button_events: MessageWriter<MouseButtonInput>,
     mut key_events: MessageWriter<KeyboardInput>,
@@ -290,9 +411,62 @@ fn drive(
     match &step {
         Step::Wait(frames) => driver.wait = *frames,
         Step::WaitIdle => {
-            if state.is_busy() {
+            if state.is_busy() || state.locked {
                 return;
             }
+        }
+        Step::UntilFinished(action) => {
+            if !run.is_finished() {
+                driver.stuck += 1;
+                if driver.stuck > 12_000 {
+                    fail(&mut driver, "attempt never finished".to_owned());
+                } else {
+                    if !state.is_busy() && !state.locked {
+                        ui.write(*action);
+                    }
+                    return;
+                }
+            }
+            driver.stuck = 0;
+        }
+        Step::ExpectScreen(expected) => {
+            let actual = *screen.get();
+            check(
+                &mut driver,
+                actual == *expected,
+                format!("screen {actual:?} is {expected:?}"),
+            );
+        }
+        Step::ExpectFinished => {
+            check(
+                &mut driver,
+                run.is_finished(),
+                "attempt finished".to_owned(),
+            );
+        }
+        Step::ExpectArrow(shown) => {
+            check(
+                &mut driver,
+                run.arrow_turn().is_some() == *shown,
+                format!("arrow showing is {shown}"),
+            );
+        }
+        Step::ExpectSolved => {
+            check(
+                &mut driver,
+                state.cube.is_solved(),
+                "cube is solved".to_owned(),
+            );
+        }
+        Step::Snapshot => driver.snapshot = state.cube.clone(),
+        Step::ExpectSnapshotPlus(text) => {
+            let mut expected = driver.snapshot.clone();
+            expected.apply_all(parse_sequence(text).unwrap_or_default());
+            check(
+                &mut driver,
+                state.cube == expected,
+                format!("cube is the snapshot plus {text:?}"),
+            );
         }
         Step::Shot(name) => {
             let path = driver.out_dir.join(format!("{name}.png"));

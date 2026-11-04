@@ -8,6 +8,7 @@ use std::f32::consts::FRAC_PI_2;
 use bevy::prelude::*;
 
 use crate::cube::{self, Axis, Cube, Layer, Turn};
+use crate::method::Goal;
 
 /// How long a quarter turn takes when nothing is waiting behind it, in seconds.
 const QUARTER_TURN_SECS: f32 = 0.18;
@@ -53,6 +54,8 @@ pub struct CubeState {
     active: Option<ActiveTurn>,
     drag: Option<LayerAngle>,
     flush_requested: bool,
+    /// Whether the player's input is being ignored, such as during a demonstration.
+    pub locked: bool,
 }
 
 /// A layer shown rotated away from its resting position.
@@ -143,14 +146,28 @@ impl CubeState {
 }
 
 /// Player progress: move history and where the current solve stands.
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct Session {
     history: Vec<Turn>,
     redo: Vec<Turn>,
     /// Where the current solve stands.
     pub phase: SolvePhase,
-    /// The fastest solve since the game started, in seconds.
+    /// What counts as finished. Training sets this to the part of the solve being practised.
+    pub goal: Goal,
+    /// The fastest time for the current activity, in seconds.
     pub best_secs: Option<f32>,
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        Self {
+            history: Vec::new(),
+            redo: Vec::new(),
+            phase: SolvePhase::default(),
+            goal: Cube::is_solved,
+            best_secs: None,
+        }
+    }
 }
 
 impl Session {
@@ -268,9 +285,7 @@ fn handle_commands(
                 }
             }
             GameCommand::Reset => {
-                *state = CubeState::default();
-                session.clear_history();
-                session.phase = SolvePhase::Free;
+                load_free(&mut state, &mut session, Cube::solved());
             }
         }
     }
@@ -358,7 +373,7 @@ fn finish_turn(cube: &mut Cube, session: &mut Session, turn: Turn, source: TurnS
         SolvePhase::Free | SolvePhase::Scrambling | SolvePhase::Solving { .. } => {}
     }
     if let SolvePhase::Solving { secs } = session.phase
-        && cube.is_solved()
+        && (session.goal)(cube)
     {
         session.best_secs = Some(session.best_secs.map_or(secs, |best| best.min(secs)));
         session.phase = SolvePhase::Solved {
@@ -366,6 +381,20 @@ fn finish_turn(cube: &mut Cube, session: &mut Session, turn: Turn, source: TurnS
             moves: session.move_count(),
         };
     }
+}
+
+/// Replaces the cube with a position to work on. The player's first move will start the timer.
+pub fn load_position(state: &mut CubeState, session: &mut Session, cube: Cube, goal: Goal) {
+    *state = CubeState { cube, ..default() };
+    session.clear_history();
+    session.goal = goal;
+    session.phase = SolvePhase::Ready;
+}
+
+/// Replaces the cube with a position for free play, with no timer.
+pub fn load_free(state: &mut CubeState, session: &mut Session, cube: Cube) {
+    load_position(state, session, cube, Cube::is_solved);
+    session.phase = SolvePhase::Free;
 }
 
 /// The fraction of a quarter turn past which a dragged layer continues to the next position.

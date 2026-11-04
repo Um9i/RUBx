@@ -143,7 +143,7 @@ fn place_cubies(state: Res<CubeState>, mut cubies: Query<(&CubieView, &mut Trans
 /// Computes a cubie's transform from its exact state, adding any in-progress layer rotation.
 ///
 /// Rebuilding from the exact state each frame means animation errors can never accumulate.
-fn cubie_transform(cubie: Cubie, rotating: Option<LayerAngle>) -> Transform {
+pub(crate) fn cubie_transform(cubie: Cubie, rotating: Option<LayerAngle>) -> Transform {
     let position = cubie.position();
     let base = Transform {
         translation: int_vec(position) * CUBIE_SIZE,

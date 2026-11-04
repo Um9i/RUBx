@@ -9,6 +9,7 @@ use crate::cube::Turn;
 use crate::drag::{FaceHit, LayerDrag, pick_face, resolve_drag};
 use crate::game::{CubeState, GameCommand, GameSet, Session, SolvePhase, release_drag};
 use crate::hud::PointerOverHud;
+use crate::screens::{Screen, cube_controls_active};
 
 /// Cursor travel in pixels before a press on the cube commits to a layer and direction.
 const DRAG_LOCK_PIXELS: f32 = 6.0;
@@ -48,12 +49,24 @@ impl Plugin for InputPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PointerMode>().add_systems(
             Update,
-            (keyboard_commands, pointer_actions, scroll_zoom).in_set(GameSet::Input),
+            (keyboard_commands, pointer_actions, scroll_zoom)
+                .in_set(GameSet::Input)
+                .run_if(cube_controls_active),
         );
     }
 }
 
-fn keyboard_commands(keys: Res<ButtonInput<KeyCode>>, mut commands: MessageWriter<GameCommand>) {
+fn keyboard_commands(
+    keys: Res<ButtonInput<KeyCode>>,
+    screen: Res<State<Screen>>,
+    state: Res<CubeState>,
+    mut commands: MessageWriter<GameCommand>,
+) {
+    if state.locked {
+        return;
+    }
+    // Training positions come from the activity, so only Play may scramble or reset freely.
+    let free_play = *screen.get() == Screen::Play;
     let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
 
@@ -68,13 +81,13 @@ fn keyboard_commands(keys: Res<ButtonInput<KeyCode>>, mut commands: MessageWrite
         if keys.just_pressed(KeyCode::KeyY) {
             commands.write(GameCommand::Redo);
         }
-        if keys.just_pressed(KeyCode::KeyR) {
+        if free_play && keys.just_pressed(KeyCode::KeyR) {
             commands.write(GameCommand::Reset);
         }
         return;
     }
 
-    if keys.just_pressed(KeyCode::Space) {
+    if free_play && keys.just_pressed(KeyCode::Space) {
         commands.write(GameCommand::Scramble);
     }
     if keys.just_pressed(KeyCode::Backspace) {
@@ -123,11 +136,11 @@ fn pointer_actions(
                     .ok()
                     .and_then(|ray| pick_face(ray.origin, *ray.direction));
                 *mode = match hit {
-                    Some(hit) if session.phase != SolvePhase::Scrambling => {
+                    Some(hit) if session.phase != SolvePhase::Scrambling && !state.locked => {
                         state.request_flush();
                         PointerMode::Grabbed { hit, start: cursor }
                     }
-                    // A press on the cube mid-scramble does nothing rather than orbiting by
+                    // A press on the cube while it's busy does nothing rather than orbiting by
                     // surprise. A press on the background always orbits.
                     Some(_) => PointerMode::Idle,
                     None => PointerMode::Orbiting { last: cursor },
