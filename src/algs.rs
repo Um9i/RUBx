@@ -25,14 +25,6 @@ impl Case {
         parse_algorithm(self.alg).unwrap_or_default()
     }
 
-    /// Returns the number of turns the algorithm takes, not counting whole-cube rotations.
-    pub fn turn_count(&self) -> usize {
-        self.turns()
-            .iter()
-            .filter(|turn| !turn.is_whole_cube())
-            .count()
-    }
-
     /// Returns a cube showing this case, with the top layer turned by `before` and `after`
     /// quarter turns so that it can't be recognised by position alone.
     pub fn setup(&self, before: i32, after: i32) -> Cube {

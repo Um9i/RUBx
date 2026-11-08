@@ -109,6 +109,15 @@ impl Turn {
     pub fn is_whole_cube(self) -> bool {
         self.layer == Layer::All
     }
+
+    /// Returns how many quarter turns of the layers this takes. Whole-cube rotations cost nothing.
+    pub fn quarter_cost(self) -> usize {
+        if self.is_whole_cube() {
+            0
+        } else {
+            usize::from(self.quarters.unsigned_abs())
+        }
+    }
 }
 
 /// Maps notation letters to the turn they name: axis, layer, and the sign of a clockwise turn.

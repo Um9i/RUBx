@@ -105,9 +105,9 @@ pub fn pick_case(
         .iter()
         .map(|case| progress.stats(&stats_key(case)))
         .collect();
-    let attempts: u32 = stats.iter().map(|stats| stats.attempts).sum();
+    let timed: u32 = stats.iter().map(|stats| stats.timed).sum();
     let total: f32 = stats.iter().map(|stats| stats.total_secs).sum();
-    let set_average = (attempts > 0).then(|| total / attempts as f32);
+    let set_average = (timed > 0).then(|| total / timed as f32);
 
     let weights: Vec<f32> = cases
         .iter()
@@ -144,6 +144,7 @@ mod tests {
         Stats {
             attempts,
             clean,
+            timed: attempts,
             total_secs,
             best_secs: Some(1.0),
         }

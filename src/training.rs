@@ -22,8 +22,8 @@ use crate::solver::{HintTracker, cross_distance};
 
 /// The pause between turns of a demonstration, in seconds, so that the player can follow it.
 const DEMO_PAUSE_SECS: f32 = 0.22;
-/// Extra turns a clean drill attempt may take, for lining up the top layer before and after.
-const DRILL_SPARE_TURNS: usize = 2;
+/// Extra quarter turns a clean drill attempt may take, to forgive one slip of the hand.
+const DRILL_SPARE_QUARTERS: usize = 1;
 
 const PLAY_KEY: &str = "play";
 const COACH_KEY: &str = "coach";
@@ -75,12 +75,17 @@ pub struct Run {
     pub revealed: bool,
     /// Whether the game made some moves for the player this attempt.
     pub assisted: bool,
+    /// Whether the player went back to the start of this position after working on it.
+    pub retried: bool,
     /// The result, once the attempt is finished.
     pub result: Option<AttemptResult>,
     /// The turns being followed, in a lesson that uses them.
     pub follow: Option<Follow>,
     /// The fewest turns that could finish the cross, when practising the cross.
     pub cross_par: Option<usize>,
+    /// Whether this position has already been scored, so finishing it again adds nothing.
+    already_scored: bool,
+    follow_text: Option<&'static str>,
     start: Option<(Cube, Goal)>,
     demo: VecDeque<Turn>,
     demo_wait: f32,
@@ -141,8 +146,11 @@ impl Run {
         self.hints_used = 0;
         self.revealed = false;
         self.assisted = false;
+        self.retried = false;
+        self.already_scored = false;
         self.result = None;
         self.follow = None;
+        self.follow_text = None;
         self.cross_par = None;
         self.demo.clear();
         self.start = Some(start);
@@ -229,6 +237,7 @@ impl Context<'_> {
                     .copied()
                     .unwrap_or_default();
                 self.run.follow = Some(Follow::new(&start, text));
+                self.run.follow_text = Some(text);
                 self.session.phase = SolvePhase::Free;
             }
             Exercise::Stage(stage) => {
@@ -299,8 +308,10 @@ impl Context<'_> {
         let Some((cube, goal)) = self.run.start.clone() else {
             return;
         };
-        let follow_text = self.follow_text();
+        let follow_text = self.run.follow_text;
         let par = self.run.cross_par;
+        let retried = self.run.retried || self.session.quarters_turned() > 0;
+        let already_scored = self.run.already_scored || self.run.is_finished();
         // Having seen the answer still counts on a retry, or a reveal could never cost anything.
         let (revealed, hints_used, assisted) =
             (self.run.revealed, self.run.hints_used, self.run.assisted);
@@ -309,19 +320,12 @@ impl Context<'_> {
         self.run.revealed = revealed;
         self.run.hints_used = hints_used;
         self.run.assisted = assisted;
+        self.run.retried = retried;
+        self.run.already_scored = already_scored;
         if let Some(text) = follow_text {
             self.run.follow = Some(Follow::new(&cube, text));
+            self.run.follow_text = Some(text);
             self.session.phase = SolvePhase::Free;
-        }
-    }
-
-    fn follow_text(&self) -> Option<&'static str> {
-        match (self.run.activity, self.run.lesson()?.exercise) {
-            (Activity::Lesson { finished, .. }, Exercise::Follow(sequences)) => sequences
-                .get(finished as usize)
-                .or(sequences.last())
-                .copied(),
-            _ => None,
         }
     }
 
@@ -482,12 +486,15 @@ fn follow_along(mut run: ResMut<Run>, state: Res<CubeState>, session: Res<Sessio
     if let Some(follow) = &mut run.follow {
         follow.sync(&state.cube);
         if follow.is_finished() && run.result.is_none() {
+            let clean = !run.assisted && !run.already_scored;
             run.result = Some(AttemptResult {
                 secs: 0.0,
                 moves: session.move_count(),
-                clean: !run.assisted,
+                clean,
             });
-            finish_lesson_position(&mut run.activity);
+            if clean {
+                finish_lesson_position(&mut run.activity);
+            }
         }
     }
 }
@@ -501,7 +508,7 @@ fn finish_lesson_position(activity: &mut Activity) {
 /// Notices when an attempt reaches its goal, and records the result.
 fn detect_finish(
     mut run: ResMut<Run>,
-    session: Res<Session>,
+    mut session: ResMut<Session>,
     current: Res<State<Screen>>,
     mut progress: ResMut<Progress>,
 ) {
@@ -516,21 +523,49 @@ fn detect_finish(
     if run.result.is_some() {
         return;
     }
-    let unaided = !run.assisted && !run.revealed && run.hints_used == 0;
+    let unaided = !run.assisted && !run.revealed && run.hints_used == 0 && !run.retried;
     let mut clean = unaided;
-    match run.activity {
+    let key = match run.activity {
         Activity::None => {
             if *current.get() == Screen::Play {
                 progress.record(PLAY_KEY, secs, true);
             }
+            None
         }
-        Activity::Lesson { .. } => finish_lesson_position(&mut run.activity),
-        Activity::Coach => progress.record(COACH_KEY, secs, unaided),
-        Activity::Drill { case, .. } => {
-            clean = unaided && moves <= case.turn_count() + DRILL_SPARE_TURNS;
-            progress.record(&stats_key(case), secs, clean);
+        Activity::Lesson { .. } => {
+            // Hints are part of learning, but a position has to be the player's own work.
+            clean = !run.assisted && !run.already_scored;
+            if clean {
+                finish_lesson_position(&mut run.activity);
+            }
+            None
         }
-        Activity::Practice(stage) => progress.record(&practice_key(stage), secs, unaided),
+        Activity::Coach => Some(COACH_KEY.to_owned()),
+        Activity::Drill {
+            case,
+            before,
+            after,
+            ..
+        } => {
+            let needed: usize = drill_solution(case, before, after)
+                .iter()
+                .map(|turn| turn.quarter_cost())
+                .sum();
+            clean = unaided && session.quarters_turned() <= needed + DRILL_SPARE_QUARTERS;
+            Some(stats_key(case))
+        }
+        Activity::Practice(stage) => Some(practice_key(stage)),
+    };
+    if let Some(key) = key {
+        if !run.already_scored {
+            if unaided {
+                progress.record(&key, secs, clean);
+            } else {
+                progress.record_helped(&key);
+            }
+        }
+        // The timer offers every finish as a new best, but only saved times should stand.
+        session.best_secs = progress.stats(&key).best_secs;
     }
     run.result = Some(AttemptResult { secs, moves, clean });
 }

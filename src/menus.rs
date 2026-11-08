@@ -262,6 +262,7 @@ fn stats_line(stats: Stats) -> String {
             format_time(best),
             format_time(average)
         ),
+        _ if stats.attempts > 0 => format!("{} done - no unaided times yet", stats.attempts),
         _ => "Not tried yet".to_owned(),
     }
 }
@@ -512,13 +513,18 @@ fn panel_result(run: &Run) -> String {
         Activity::Lesson { .. } => {
             if run.lesson_complete() {
                 "Lesson complete! Press Next to carry on.".to_owned()
-            } else {
+            } else if result.clean {
                 "Nice! Press Next for another.".to_owned()
+            } else {
+                "That one doesn't count towards the lesson. Press Next to do a new one yourself."
+                    .to_owned()
             }
         }
         Activity::Coach => {
             if result.clean {
                 format!("Solved with no help in {time}!")
+            } else if run.retried {
+                format!("Solved in {time}. A retry doesn't count as unaided.")
             } else {
                 format!("Solved in {time}. Next time, try it with fewer hints.")
             }
@@ -528,11 +534,10 @@ fn panel_result(run: &Run) -> String {
                 format!("Clean! {time}, {}.", moves_text(result.moves))
             } else if run.revealed || run.assisted {
                 format!("{time}. You had help, so this case will come up again soon.")
+            } else if run.retried {
+                format!("{time}. A retry doesn't count as a clean attempt.")
             } else {
-                format!(
-                    "{time}, but {} is more than this algorithm needs.",
-                    moves_text(result.moves)
-                )
+                format!("{time}, but that's more turning than this algorithm needs.")
             }
         }
         Activity::Practice(_) => match run.cross_par {

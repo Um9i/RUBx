@@ -3,7 +3,7 @@
 use bevy::prelude::*;
 
 use crate::drills::DrillSet;
-use crate::game::{GameCommand, GameSet};
+use crate::game::{CubeState, GameCommand, GameSet};
 use crate::setups::PracticeStage;
 
 /// Where the player is in the game.
@@ -121,6 +121,7 @@ impl Plugin for ScreenPlugin {
 fn navigate(
     mut actions: MessageReader<UiAction>,
     screen: Res<State<Screen>>,
+    state: Res<CubeState>,
     mut next: ResMut<NextState<Screen>>,
     mut commands: MessageWriter<GameCommand>,
     mut exit: MessageWriter<AppExit>,
@@ -133,7 +134,7 @@ fn navigate(
                     next.set(parent);
                 }
             }
-            UiAction::Game(command) => {
+            UiAction::Game(command) if !state.locked => {
                 commands.write(command);
             }
             UiAction::Quit => {

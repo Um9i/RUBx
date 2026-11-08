@@ -92,6 +92,20 @@ fn finish_with_show_me(app: &mut App) {
     panic!("the attempt never finished");
 }
 
+/// Finishes the attempt by making each suggested turn. Hints are allowed in lessons.
+fn finish_following_hints(app: &mut App) {
+    act(app, UiAction::Hint);
+    for _ in 0..500 {
+        if run(app).is_finished() {
+            return;
+        }
+        let next = run(app).arrow_turn().expect("a suggested turn");
+        app.world_mut().write_message(GameCommand::Turn(next));
+        settle(app);
+    }
+    panic!("the attempt never finished");
+}
+
 #[test]
 fn game_should_start_on_the_menu() {
     assert_eq!(screen(&app()), Screen::Menu);
@@ -164,10 +178,10 @@ fn notation_lesson_should_flag_a_wrong_move_and_recover_after_undo() {
 fn notation_lesson_should_complete_after_both_exercises() {
     let mut app = app();
     act(&mut app, UiAction::StartLesson(0));
-    finish_with_show_me(&mut app);
+    finish_following_hints(&mut app);
     assert!(!run(&app).lesson_complete());
     act(&mut app, UiAction::Next);
-    finish_with_show_me(&mut app);
+    finish_following_hints(&mut app);
     assert!(run(&app).lesson_complete());
     assert!(progress(&app).lesson_done("notation"));
 }
@@ -179,7 +193,7 @@ fn every_stage_lesson_should_finish_and_be_saved_after_three_positions() {
         act(&mut app, UiAction::StartLesson(index));
         for position in 0..3 {
             assert!(!run(&app).lesson_complete(), "lesson {index}, {position}");
-            finish_with_show_me(&mut app);
+            finish_following_hints(&mut app);
             if position < 2 {
                 act(&mut app, UiAction::Next);
             }
@@ -193,13 +207,38 @@ fn next_after_finishing_a_lesson_should_start_the_next_one() {
     let mut app = app();
     act(&mut app, UiAction::StartLesson(7));
     for _ in 0..2 {
-        finish_with_show_me(&mut app);
+        finish_following_hints(&mut app);
         act(&mut app, UiAction::Next);
     }
-    finish_with_show_me(&mut app);
+    finish_following_hints(&mut app);
     act(&mut app, UiAction::Next);
     // Lesson 8 is the last, so Next returns to the list.
     assert_eq!(screen(&app), Screen::LessonList);
+}
+
+fn lesson_positions_finished(app: &App) -> u32 {
+    match run(app).activity {
+        Activity::Lesson { finished, .. } => finished,
+        activity => panic!("expected a lesson, got {activity:?}"),
+    }
+}
+
+#[test]
+fn lesson_position_finished_with_show_me_should_not_count() {
+    let mut app = app();
+    act(&mut app, UiAction::StartLesson(1));
+    finish_with_show_me(&mut app);
+    assert_eq!(lesson_positions_finished(&app), 0);
+}
+
+#[test]
+fn retrying_a_finished_lesson_position_should_not_count_twice() {
+    let mut app = app();
+    act(&mut app, UiAction::StartLesson(1));
+    finish_following_hints(&mut app);
+    act(&mut app, UiAction::Restart);
+    finish_following_hints(&mut app);
+    assert_eq!(lesson_positions_finished(&app), 1);
 }
 
 #[test]
@@ -331,6 +370,113 @@ fn drill_solved_the_long_way_should_not_count_as_clean() {
     solve_drill(&mut app, case, before, after);
     let stats = progress(&app).stats(&stats_key(case));
     assert_eq!((stats.attempts, stats.clean), (1, 0));
+}
+
+/// Solves a drill the way a keyboard does, with every half turn as two key presses.
+fn solve_drill_by_keyboard(app: &mut App, case: &Case, before: i32, after: i32) {
+    let top = |quarters: i32| Turn::new(rubx::cube::Axis::Y, rubx::cube::Layer::Pos, -quarters);
+    let turns: Vec<Turn> = [top(before)]
+        .into_iter()
+        .chain(case.turns())
+        .chain([top(after)])
+        .filter(|turn| !turn.is_identity())
+        .collect();
+    for next in turns {
+        let presses = if next.quarters == 2 { 2 } else { 1 };
+        let single = Turn::new(next.axis, next.layer, i32::from(next.quarters) / presses);
+        for _ in 0..presses {
+            app.world_mut().write_message(GameCommand::Turn(single));
+            settle(app);
+        }
+    }
+}
+
+#[test]
+fn drill_solved_by_keyboard_should_count_as_clean() {
+    let mut app = app();
+    // The starter set is mostly half-turn algorithms, so several runs are sure to include some.
+    for _ in 0..12 {
+        let (case, before, after) = drill(&mut app);
+        solve_drill_by_keyboard(&mut app, case, before, after);
+        assert!(run(&app).result.unwrap().clean, "{}", case.name);
+    }
+}
+
+fn undo(app: &mut App) {
+    app.world_mut().write_message(GameCommand::Undo);
+    settle(app);
+}
+
+#[test]
+fn drill_with_one_undone_slip_should_still_count_as_clean() {
+    let mut app = app();
+    let (case, before, after) = drill(&mut app);
+    turn(&mut app, "R");
+    undo(&mut app);
+    solve_drill(&mut app, case, before, after);
+    assert_eq!(progress(&app).stats(&stats_key(case)).clean, 1);
+}
+
+#[test]
+fn drill_with_several_undone_moves_should_not_count_as_clean() {
+    let mut app = app();
+    let (case, before, after) = drill(&mut app);
+    for text in ["R", "U", "F"] {
+        turn(&mut app, text);
+    }
+    for _ in 0..3 {
+        undo(&mut app);
+    }
+    solve_drill(&mut app, case, before, after);
+    assert_eq!(progress(&app).stats(&stats_key(case)).clean, 0);
+}
+
+#[test]
+fn demonstration_should_not_set_a_best_time() {
+    let mut app = app();
+    let (case, ..) = drill(&mut app);
+    act(&mut app, UiAction::ShowMe);
+    settle(&mut app);
+    let stats = progress(&app).stats(&stats_key(case));
+    assert_eq!(
+        (stats.attempts, stats.best_secs, session(&app).best_secs),
+        (1, None, None),
+    );
+}
+
+#[test]
+fn retrying_a_finished_drill_should_not_be_scored_again() {
+    let mut app = app();
+    let (case, before, after) = drill(&mut app);
+    solve_drill(&mut app, case, before, after);
+    act(&mut app, UiAction::Restart);
+    solve_drill(&mut app, case, before, after);
+    let stats = progress(&app).stats(&stats_key(case));
+    assert_eq!((stats.attempts, stats.clean), (1, 1));
+}
+
+#[test]
+fn retrying_an_unfinished_drill_should_not_count_as_clean() {
+    let mut app = app();
+    let (case, before, after) = drill(&mut app);
+    turn(&mut app, "R");
+    act(&mut app, UiAction::Restart);
+    solve_drill(&mut app, case, before, after);
+    let stats = progress(&app).stats(&stats_key(case));
+    assert_eq!((stats.attempts, stats.clean, stats.best_secs), (1, 0, None));
+}
+
+#[test]
+fn undo_button_should_do_nothing_during_a_demonstration() {
+    let mut app = app();
+    drill(&mut app);
+    act(&mut app, UiAction::ShowMe);
+    for _ in 0..40 {
+        app.update();
+    }
+    act(&mut app, UiAction::Game(GameCommand::Undo));
+    settle(&mut app);
+    assert!(cube(&app).is_solved());
 }
 
 #[test]

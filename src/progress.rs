@@ -18,16 +18,18 @@ pub struct Stats {
     pub attempts: u32,
     /// How many of those were done unaided.
     pub clean: u32,
+    /// How many of those have a time that counts. Attempts with help don't.
+    pub timed: u32,
     /// The fastest time, in seconds.
     pub best_secs: Option<f32>,
-    /// The sum of all times, in seconds.
+    /// The sum of all counted times, in seconds.
     pub total_secs: f32,
 }
 
 impl Stats {
     /// Returns the average time in seconds, if there are any results.
     pub fn average_secs(&self) -> Option<f32> {
-        (self.attempts > 0).then(|| self.total_secs / self.attempts as f32)
+        (self.timed > 0).then(|| self.total_secs / self.timed as f32)
     }
 
     /// Returns the share of attempts done unaided, from 0 to 1.
@@ -79,13 +81,20 @@ impl Progress {
         self.save();
     }
 
-    /// Adds a result under `key` and saves.
+    /// Adds an attempt made without help under `key` and saves.
     pub fn record(&mut self, key: &str, secs: f32, clean: bool) {
         let stats = self.stats.entry(key.to_owned()).or_default();
         stats.attempts += 1;
         stats.clean += u32::from(clean);
+        stats.timed += 1;
         stats.total_secs += secs;
         stats.best_secs = Some(stats.best_secs.map_or(secs, |best| best.min(secs)));
+        self.save();
+    }
+
+    /// Adds an attempt that had help under `key` and saves. Its time says nothing about the player.
+    pub fn record_helped(&mut self, key: &str) {
+        self.stats.entry(key.to_owned()).or_default().attempts += 1;
         self.save();
     }
 
@@ -106,8 +115,8 @@ impl Progress {
                 .best_secs
                 .map_or("-".to_owned(), |best| best.to_string());
             text.push_str(&format!(
-                "stats\t{key}\t{}\t{}\t{best}\t{}\n",
-                stats.attempts, stats.clean, stats.total_secs
+                "stats\t{key}\t{}\t{}\t{best}\t{}\t{}\n",
+                stats.attempts, stats.clean, stats.total_secs, stats.timed
             ));
         }
         text
@@ -121,10 +130,17 @@ impl Progress {
                 ["lesson", id] => {
                     progress.lessons_done.insert((*id).to_owned());
                 }
-                ["stats", key, attempts, clean, best, total] => {
+                ["stats", key, attempts, clean, best, total, rest @ ..] => {
                     let parsed = (|| {
+                        let attempts = attempts.parse().ok()?;
                         Some(Stats {
-                            attempts: attempts.parse().ok()?,
+                            attempts,
+                            // Older saves counted a time for every attempt.
+                            timed: match rest {
+                                [] => attempts,
+                                [timed] => timed.parse().ok()?,
+                                _ => return None,
+                            },
                             clean: clean.parse().ok()?,
                             best_secs: match *best {
                                 "-" => None,
@@ -197,6 +213,23 @@ mod tests {
     #[test]
     fn stats_should_report_the_clean_rate() {
         assert_eq!(sample().stats("drill:T perm").clean_rate(), Some(0.5));
+    }
+
+    #[test]
+    fn helped_attempts_should_not_change_times() {
+        let mut progress = sample();
+        progress.record_helped("drill:T perm");
+        let stats = progress.stats("drill:T perm");
+        assert_eq!(
+            (stats.attempts, stats.best_secs, stats.average_secs()),
+            (3, Some(4.5), Some(5.5)),
+        );
+    }
+
+    #[test]
+    fn saves_without_a_timed_count_should_treat_every_attempt_as_timed() {
+        let progress = Progress::parse("stats\tplay\t2\t1\t9.5\t20\n");
+        assert_eq!(progress.stats("play").average_secs(), Some(10.0));
     }
 
     #[test]

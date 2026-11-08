@@ -150,6 +150,7 @@ impl CubeState {
 pub struct Session {
     history: Vec<Turn>,
     redo: Vec<Turn>,
+    undone_quarters: usize,
     /// Where the current solve stands.
     pub phase: SolvePhase,
     /// What counts as finished. Training sets this to the part of the solve being practised.
@@ -163,6 +164,7 @@ impl Default for Session {
         Self {
             history: Vec::new(),
             redo: Vec::new(),
+            undone_quarters: 0,
             phase: SolvePhase::default(),
             goal: Cube::is_solved,
             best_secs: None,
@@ -179,6 +181,15 @@ impl Session {
             .count()
     }
 
+    /// Returns the quarter turns made so far, including any that were undone.
+    ///
+    /// A half turn costs two either way, so this doesn't depend on whether it was made with one
+    /// drag or two key presses.
+    pub fn quarters_turned(&self) -> usize {
+        let kept: usize = self.history.iter().map(|turn| turn.quarter_cost()).sum();
+        kept + self.undone_quarters
+    }
+
     /// Returns whether there is a turn to redo.
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
@@ -192,6 +203,7 @@ impl Session {
     fn clear_history(&mut self) {
         self.history.clear();
         self.redo.clear();
+        self.undone_quarters = 0;
     }
 }
 
@@ -268,12 +280,14 @@ fn handle_commands(
             GameCommand::Undo => {
                 if let Some(turn) = session.history.pop() {
                     session.redo.push(turn);
+                    session.undone_quarters += turn.quarter_cost();
                     enqueue(&mut state, turn.inverse(), TurnSource::Replay);
                 }
             }
             GameCommand::Redo => {
                 if let Some(turn) = session.redo.pop() {
                     session.history.push(turn);
+                    session.undone_quarters -= turn.quarter_cost();
                     enqueue(&mut state, turn, TurnSource::Replay);
                 }
             }
