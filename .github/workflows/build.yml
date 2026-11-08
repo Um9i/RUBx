@@ -25,7 +25,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libudev-dev libwayland-dev libxkbcommon-dev
+          sudo apt-get install -y pkg-config libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -34,8 +34,15 @@ jobs:
       - name: Build
         run: cargo build --release --locked
 
+      - name: Package
+        shell: bash
+        run: |
+          mkdir dist
+          cp ${{ matrix.binary }} dist/
+          cp -r assets dist/
+
       - uses: actions/upload-artifact@v4
         with:
           name: rubx-${{ runner.os }}
-          path: ${{ matrix.binary }}
+          path: dist
           if-no-files-found: error

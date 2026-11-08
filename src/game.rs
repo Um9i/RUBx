@@ -34,6 +34,15 @@ pub enum GameCommand {
     Reset,
 }
 
+/// A layer has begun moving on its own, from a queued turn or a released drag.
+///
+/// Whole-cube rotations and drags that snap back to where they started don't count.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TurnStarted {
+    /// Whether this turn is part of a scramble.
+    pub scramble: bool,
+}
+
 /// Runs the game systems in a stable order within `Update`.
 #[derive(SystemSet, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum GameSet {
@@ -94,6 +103,8 @@ struct ActiveTurn {
     to: f32,
     elapsed: f32,
     duration: f32,
+    /// Whether [`TurnStarted`] has been sent for this turn.
+    announced: bool,
 }
 
 impl ActiveTurn {
@@ -239,6 +250,7 @@ pub struct GamePlugin;
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<GameCommand>()
+            .add_message::<TurnStarted>()
             .init_resource::<CubeState>()
             .init_resource::<Session>()
             .init_resource::<ScrambleRng>()
@@ -309,7 +321,12 @@ fn enqueue(state: &mut CubeState, turn: Turn, source: TurnSource) {
     state.queue.push_back(QueuedTurn { turn, source });
 }
 
-fn advance_turns(time: Res<Time>, mut state: ResMut<CubeState>, mut session: ResMut<Session>) {
+fn advance_turns(
+    time: Res<Time>,
+    mut state: ResMut<CubeState>,
+    mut session: ResMut<Session>,
+    mut started: MessageWriter<TurnStarted>,
+) {
     let dt = time.delta_secs();
     let state = &mut *state;
 
@@ -343,6 +360,16 @@ fn advance_turns(time: Res<Time>, mut state: ResMut<CubeState>, mut session: Res
         state.active = Some(start_turn(queued, backlog));
     }
 
+    if let Some(active) = &mut state.active
+        && !std::mem::replace(&mut active.announced, true)
+        && !active.turn.is_identity()
+        && !active.turn.is_whole_cube()
+    {
+        started.write(TurnStarted {
+            scramble: active.source == TurnSource::Scramble,
+        });
+    }
+
     if session.phase == SolvePhase::Scrambling && !state.is_busy() {
         session.phase = SolvePhase::Ready;
     }
@@ -365,6 +392,7 @@ fn start_turn(queued: QueuedTurn, backlog: usize) -> ActiveTurn {
         to,
         elapsed: 0.0,
         duration: scaled_duration(base, to),
+        announced: false,
     }
 }
 
@@ -437,6 +465,7 @@ pub fn release_drag(state: &mut CubeState, session: &mut Session) {
         to,
         elapsed: 0.0,
         duration: scaled_duration(QUARTER_TURN_SECS * 0.8, to - angle),
+        announced: false,
     });
 }
 

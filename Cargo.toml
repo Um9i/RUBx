@@ -5,7 +5,7 @@ edition = "2024"
 description = "A Rubik's cube simulator built with Bevy"
 
 [dependencies]
-bevy = { version = "0.20.1", default-features = false, features = ["3d", "ui"] }
+bevy = { version = "0.20.1", default-features = false, features = ["3d", "ui", "audio"] }
 fastrand = "2"
 
 [lints.clippy]

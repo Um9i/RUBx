@@ -6,7 +6,7 @@ use bevy::prelude::*;
 use bevy::time::TimeUpdateStrategy;
 use rubx::cube::{Axis, Cube, Layer, Turn, parse_sequence};
 use rubx::game::{
-    CubeState, GameCommand, GamePlugin, ScrambleRng, Session, SolvePhase, release_drag,
+    CubeState, GameCommand, GamePlugin, ScrambleRng, Session, SolvePhase, TurnStarted, release_drag,
 };
 
 fn app() -> App {
@@ -273,6 +273,69 @@ fn release(app: &mut App) {
 }
 
 const CLOCKWISE_R_DRAG: f32 = -1.2;
+
+#[derive(Resource, Default)]
+struct StartedTurns(Vec<TurnStarted>);
+
+fn counting_app() -> App {
+    let mut app = app();
+    app.init_resource::<StartedTurns>().add_systems(
+        Update,
+        |mut started: MessageReader<TurnStarted>, mut seen: ResMut<StartedTurns>| {
+            seen.0.extend(started.read().copied());
+        },
+    );
+    app
+}
+
+fn started_turns(app: &App) -> &[TurnStarted] {
+    &app.world().resource::<StartedTurns>().0
+}
+
+#[test]
+fn each_layer_turn_should_be_announced_once() {
+    let mut app = counting_app();
+    send(&mut app, turn("R"));
+    send(&mut app, turn("U"));
+    settle(&mut app);
+    assert_eq!(
+        started_turns(&app),
+        [TurnStarted { scramble: false }; 2].as_slice()
+    );
+}
+
+#[test]
+fn whole_cube_rotation_should_not_be_announced() {
+    let mut app = counting_app();
+    send(&mut app, turn("x"));
+    settle(&mut app);
+    assert!(started_turns(&app).is_empty());
+}
+
+#[test]
+fn scramble_turns_should_be_announced_as_scramble() {
+    let mut app = counting_app();
+    send(&mut app, GameCommand::Scramble);
+    settle(&mut app);
+    assert!(!started_turns(&app).is_empty());
+    assert!(started_turns(&app).iter().all(|turn| turn.scramble));
+}
+
+#[test]
+fn released_drag_should_be_announced_only_when_it_turns_a_layer() {
+    let mut app = counting_app();
+    hold_r_layer(&mut app, -0.2);
+    app.update();
+    release(&mut app);
+    settle(&mut app);
+    assert!(started_turns(&app).is_empty());
+
+    hold_r_layer(&mut app, CLOCKWISE_R_DRAG);
+    app.update();
+    release(&mut app);
+    settle(&mut app);
+    assert_eq!(started_turns(&app).len(), 1);
+}
 
 #[test]
 fn released_drag_should_apply_the_turn() {

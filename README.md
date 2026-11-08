@@ -75,6 +75,8 @@ Whole-cube rotations don't start the timer or count as moves, so you can inspect
 | `src/hint_view.rs` | Arrows and outlines drawn on the cube |
 | `src/camera.rs`, `src/input.rs` | Camera, keyboard, and mouse |
 | `src/hud.rs`, `src/menus.rs` | Timer, buttons, menus, and training panels |
+| `src/audio.rs` | Turn sounds and the music playlist |
+| `assets/audio/` | CC0 sounds and music, with credits alongside. The game looks for `assets/` next to the executable |
 | `tests/game_flow.rs`, `tests/training_flow.rs` | Rules and activities, run through real Bevy schedules without a window |
 | `examples/drive.rs` | Plays the game in a real window and takes screenshots |
 

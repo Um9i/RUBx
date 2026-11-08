@@ -8,8 +8,10 @@
 //! - [`drag`] is the geometry behind turning a layer with the mouse.
 //! - [`view`], [`camera`], [`input`], [`hud`], [`menus`], and [`hint_view`] connect it all to the
 //!   window.
+//! - [`audio`] plays the turn sounds and music.
 
 pub mod algs;
+pub mod audio;
 pub mod camera;
 pub mod cube;
 pub mod drag;
@@ -45,6 +47,7 @@ impl Plugin for RubxPlugin {
             hud::HudPlugin,
             menus::MenuPlugin,
             hint_view::HintViewPlugin,
+            audio::GameAudioPlugin,
         ));
     }
 }
