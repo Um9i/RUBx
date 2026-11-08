@@ -1,3 +1,6 @@
+// Release builds on Windows open no console window. Debug builds keep it for logs.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use bevy::prelude::*;
 use rubx::RubxPlugin;
 
